@@ -3,8 +3,6 @@ name: ArXiv Weekly Papers
 on:
     schedule:
         - cron: "0 0 * * 1"
-    push:
-        branches: [main]
 
 jobs:
     download-and-release:
@@ -30,6 +28,39 @@ jobs:
 
             - name: Run main script
               run: python main.py
+
+            - name: Check PDF files integrity
+              run: |
+                  # 安装pdfinfo工具（如果尚未安装）
+                  if ! command -v pdfinfo &> /dev/null; then
+                    echo "安装PDF检查工具..."
+                    sudo apt-get update && sudo apt-get install -y poppler-utils
+                  fi
+                  echo "开始检查PDF文件完整性..."
+                  file_count=0
+                  invalid_count=0
+                  for pdf_file in pdf/*.pdf; do
+                    if [ -f "$pdf_file" ]; then
+                      file_count=$((file_count + 1))
+                      # 使用pdfinfo检查PDF文件是否有效
+                      if ! pdfinfo "$pdf_file" &> /dev/null; then
+                        echo "发现损坏的PDF文件: $pdf_file, 正在删除..."
+                        rm -f "$pdf_file"
+                        invalid_count=$((invalid_count + 1))
+                      else
+                        # 检查PDF文件大小是否过小（小于10KB可能是不完整的）
+                        file_size=$(stat -c%s "$pdf_file")
+                        if [ "$file_size" -lt 10240 ]; then
+                          echo "发现可能不完整的PDF文件(过小): $pdf_file, 正在删除..."
+                          rm -f "$pdf_file"
+                          invalid_count=$((invalid_count + 1))
+                        else
+                          echo "PDF文件有效: $pdf_file ($(echo "scale=2; $file_size/1024/1024" | bc) MB)"
+                        fi
+                      fi
+                    fi
+                  done
+                  echo "PDF完整性检查完成: 共检查 $file_count 个文件，删除了 $invalid_count 个不完整或损坏的文件"
 
             - name: Set current date (Beijing time)
               run: |
