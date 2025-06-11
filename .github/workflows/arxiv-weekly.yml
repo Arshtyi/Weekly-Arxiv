@@ -1,0 +1,90 @@
+name: ArXiv Weekly Papers
+
+on:
+    schedule:
+        - cron: "0 0 * * 1"
+    push:
+        branches: [main]
+
+jobs:
+    download-and-release:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check out repository
+              uses: actions/checkout@v3
+              with:
+                  fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.10"
+
+            - name: Install dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+            - name: Create pdf directory if not exists
+              run: mkdir -p pdf
+
+            - name: Run main script
+              run: python main.py
+
+            - name: Set current date (Beijing time)
+              run: |
+                  echo "BEIJING_DATE=$(TZ='Asia/Shanghai' date +'%Y-%m-%d')" >> $GITHUB_ENV
+                  echo "设置北京日期为: $(TZ='Asia/Shanghai' date +'%Y-%m-%d')"
+
+            - name: Create archive of papers
+              run: |
+                  tar -cJf "papers-${{ env.BEIJING_DATE }}.tar.xz" -C pdf .
+                  echo "论文打包完成: papers-${{ env.BEIJING_DATE }}.tar.xz"
+
+            - name: Create GitHub Release
+              id: create_release
+              uses: softprops/action-gh-release@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                  tag_name: ${{ env.BEIJING_DATE }}
+                  name: ${{ env.BEIJING_DATE }}
+                  body: "weekly papers ${{ env.BEIJING_DATE }}"
+                  files: papers-${{ env.BEIJING_DATE }}.tar.xz
+                  draft: false
+                  prerelease: false
+
+            - name: Install GitHub CLI
+              run: |
+                  type -p curl >/dev/null || sudo apt-get install curl -y
+                  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+                  && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+                  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+                  && sudo apt-get update \
+                  && sudo apt-get install gh -y
+
+            - name: Clean old releases
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  # 获取所有release，按创建时间排序，保留最新的5个，删除其余
+                  releases=$(gh api repos/${{ github.repository }}/releases --paginate | jq -r '.[] | .id + " " + .tag_name' | sort -k1,1nr)
+                  count=$(echo "$releases" | wc -l)
+
+                  if [ "$count" -gt 5 ]; then
+                    echo "发现 $count 个历史release，将保留最新的5个"
+                    
+                    # 提取需要删除的release
+                    to_delete=$(echo "$releases" | tail -n +6)
+                    
+                    # 删除旧的release和对应的tag
+                    echo "$to_delete" | while read -r id tag; do
+                      echo "正在删除release ID: $id, Tag: $tag"
+                      gh api -X DELETE repos/${{ github.repository }}/releases/$id
+                      git push --delete origin "refs/tags/$tag" || echo "删除tag $tag 失败，可能已经不存在"
+                    done
+                    
+                    echo "清理完成，现在应该只有5个最新的release"
+                  else
+                    echo "当前只有 $count 个release，不需要清理"
+                  fi
